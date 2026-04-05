@@ -8,18 +8,19 @@ class Message:
     text: str
     message_type: str
     room: str = "Geral"
+    to_user: str = ""
 
 
 def main(page: ft.Page):
     page.title = "Chat App"
 
-    # ── Estado atual ──────────────────────────────────────────────────────────
     current_room = ["Geral"]
+    is_private = [False]
+    private_with = [""]
 
-    # ── Salas disponíveis ─────────────────────────────────────────────────────
     rooms = ["Geral", "Tecnologia", "Desporto"]
+    online_users = {}  # username -> page_id
 
-    # ── Chat e input ──────────────────────────────────────────────────────────
     chat = ft.Column(
         expand=True,
         scroll=ft.ScrollMode.AUTO,
@@ -39,36 +40,112 @@ def main(page: ft.Page):
         color=ft.Colors.WHITE,
     )
 
+    users_list = ft.Column(spacing=4)
+
+    # ── Atualizar lista de utilizadores ──────────────────────────────────────
+    def refresh_users():
+        users_list.controls.clear()
+        for username in online_users:
+            my_name = page.session.store.get("user_name")
+            if username == my_name:
+                continue
+            users_list.controls.append(
+                ft.TextButton(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.PERSON, color=ft.Colors.GREEN_400, size=14),
+                            ft.Text(username, color=ft.Colors.WHITE, size=13),
+                        ]
+                    ),
+                    on_click=lambda e, u=username: open_private_chat(u),
+                )
+            )
+        page.update()
+
+    # ── Abrir chat privado ────────────────────────────────────────────────────
+    def open_private_chat(username: str):
+        is_private[0] = True
+        private_with[0] = username
+        room_title.value = f"🔒 Privado com {username}"
+        chat.controls.clear()
+        page.update()
+
     # ── Receber mensagens ─────────────────────────────────────────────────────
     def on_message(message: Message):
-        if message.room != current_room[0]:
+        my_name = page.session.store.get("user_name")
+
+        if message.message_type == "user_update":
+            online_users.update({message.user: message.room})
+            refresh_users()
             return
-        if message.message_type == "chat_message":
+
+        if message.message_type == "private_message":
+            if not (
+                (message.user == my_name and message.to_user == private_with[0]) or
+                (message.to_user == my_name and message.user == private_with[0])
+            ):
+                return
+            if not (is_private[0] and (private_with[0] == message.user or private_with[0] == message.to_user)):
+                return
+
+            is_me = message.user == my_name
             chat.controls.append(
                 ft.Container(
                     content=ft.Column(
                         controls=[
                             ft.Text(
-                                message.user,
+                                "Tu" if is_me else message.user,
                                 weight=ft.FontWeight.BOLD,
-                                color=ft.Colors.BLUE_400,
+                                color=ft.Colors.ORANGE_400 if is_me else ft.Colors.BLUE_400,
                                 size=12,
                             ),
                             ft.Text(message.text, size=14),
                         ],
                         spacing=2,
                     ),
-                    bgcolor=ft.Colors.BLUE_GREY_900,
+                    bgcolor=ft.Colors.BLUE_GREY_800 if is_me else ft.Colors.BLUE_GREY_900,
                     border_radius=10,
                     padding=10,
-                    margin=ft.Margin(0, 0, 0, 4),
+                    margin=ft.Margin(40 if is_me else 0, 0, 0 if is_me else 40, 4),
                 )
             )
-        elif message.message_type == "login_message":
+            page.update()
+            return
+
+        if message.message_type == "chat_message":
+            if is_private[0] or message.room != current_room[0]:
+                return
+            is_me = message.user == my_name
+            chat.controls.append(
+                ft.Container(
+                    content=ft.Column(
+                        controls=[
+                            ft.Text(
+                                "Tu" if is_me else message.user,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.ORANGE_400 if is_me else ft.Colors.BLUE_400,
+                                size=12,
+                            ),
+                            ft.Text(message.text, size=14),
+                        ],
+                        spacing=2,
+                    ),
+                    bgcolor=ft.Colors.BLUE_GREY_800 if is_me else ft.Colors.BLUE_GREY_900,
+                    border_radius=10,
+                    padding=10,
+                    margin=ft.Margin(40 if is_me else 0, 0, 0 if is_me else 40, 4),
+                )
+            )
+            page.update()
+            return
+
+        if message.message_type == "login_message":
+            if message.room != current_room[0]:
+                return
             chat.controls.append(
                 ft.Text(message.text, italic=True, color=ft.Colors.BLACK_45, size=12)
             )
-        page.update()
+            page.update()
 
     page.pubsub.subscribe(on_message)
 
@@ -76,19 +153,34 @@ def main(page: ft.Page):
     def send_click(e):
         if not new_message.value:
             return
-        page.pubsub.send_all(
-            Message(
-                user=page.session.store.get("user_name"),
-                text=new_message.value,
-                message_type="chat_message",
-                room=current_room[0],
+        my_name = page.session.store.get("user_name")
+
+        if is_private[0]:
+            page.pubsub.send_all(
+                Message(
+                    user=my_name,
+                    text=new_message.value,
+                    message_type="private_message",
+                    room=current_room[0],
+                    to_user=private_with[0],
+                )
             )
-        )
+        else:
+            page.pubsub.send_all(
+                Message(
+                    user=my_name,
+                    text=new_message.value,
+                    message_type="chat_message",
+                    room=current_room[0],
+                )
+            )
         new_message.value = ""
         page.update()
 
     # ── Mudar de sala ─────────────────────────────────────────────────────────
     def change_room(room: str):
+        is_private[0] = False
+        private_with[0] = ""
         current_room[0] = room
         room_title.value = f"# {room}"
         chat.controls.clear()
@@ -121,7 +213,6 @@ def main(page: ft.Page):
             on_click=lambda e, r=room: change_room(r),
         )
 
-    # ── Lista de salas ────────────────────────────────────────────────────────
     rooms_list = ft.Column(
         controls=[build_room_button(r) for r in rooms],
         spacing=4,
@@ -133,6 +224,7 @@ def main(page: ft.Page):
         bgcolor=ft.Colors.BLUE_GREY_800,
         padding=10,
         content=ft.Column(
+            scroll=ft.ScrollMode.AUTO,
             controls=[
                 ft.Text("Salas", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=16),
                 ft.Divider(color=ft.Colors.WHITE_24),
@@ -149,6 +241,10 @@ def main(page: ft.Page):
                         ),
                     ]
                 ),
+                ft.Divider(color=ft.Colors.WHITE_24),
+                ft.Text("Online", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD, size=16),
+                ft.Divider(color=ft.Colors.WHITE_24),
+                users_list,
             ]
         ),
     )
@@ -191,13 +287,23 @@ def main(page: ft.Page):
             user_name.error_text = "Nome não pode ser vazio!"
             page.update()
         else:
-            page.session.store.set("user_name", user_name.value)
+            name = user_name.value
+            page.session.store.set("user_name", name)
+            online_users[name] = current_room[0]
             page.pop_dialog()
             page.pubsub.send_all(
                 Message(
-                    user=user_name.value,
-                    text=f"{user_name.value} entrou no chat.",
+                    user=name,
+                    text=f"{name} entrou no chat.",
                     message_type="login_message",
+                    room=current_room[0],
+                )
+            )
+            page.pubsub.send_all(
+                Message(
+                    user=name,
+                    text="",
+                    message_type="user_update",
                     room=current_room[0],
                 )
             )
@@ -221,5 +327,4 @@ def main(page: ft.Page):
         )
     )
 
-
-ft.run(main)
+ft.run(main.py)
