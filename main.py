@@ -1,4 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import base64
+import mimetypes
+import os
 import flet as ft
 
 
@@ -11,6 +14,9 @@ class Message:
     to_user: str = ""
     reaction: str = ""
     message_id: str = ""
+    file_name: str = ""   # nome original do ficheiro
+    file_data: str = ""   # base64 do conteúdo
+    file_mime: str = ""   # ex: "image/png", "application/pdf"
 
 
 # ── Paletas de cores ──────────────────────────────────────────────────────────
@@ -373,7 +379,167 @@ def main(page: ft.Page):
         }
         return bubble
 
-    # ── Toggle tema ───────────────────────────────────────────────────────────
+    # ── Construir bolha de ficheiro ───────────────────────────────────────────
+    def build_file_bubble(username: str, is_me: bool, file_name: str,
+                          file_data: str, file_mime: str):
+        is_image = file_mime.startswith("image/")
+
+        if is_image:
+            content_widget = ft.Image(
+                src_base64=file_data,
+                width=250,
+                fit=ft.ImageFit.CONTAIN,
+                border_radius=6,
+            )
+        else:
+            # Ícone genérico para outros ficheiros
+            ext = os.path.splitext(file_name)[1].upper() or "FILE"
+            content_widget = ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.INSERT_DRIVE_FILE, color=ft.Colors.BLUE_300, size=32),
+                    ft.Column(
+                        controls=[
+                            ft.Text(file_name, size=13, weight=ft.FontWeight.BOLD,
+                                    overflow=ft.TextOverflow.ELLIPSIS, max_lines=1),
+                            ft.Text(ext, size=11, color=ft.Colors.GREY_400),
+                        ],
+                        spacing=2,
+                    ),
+                ],
+                spacing=8,
+            )
+
+        def save_file(e):
+            raw = base64.b64decode(file_data)
+            # Guarda na pasta Downloads do utilizador ou na pasta atual
+            downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+            dest_dir = downloads if os.path.isdir(downloads) else os.getcwd()
+            dest = os.path.join(dest_dir, file_name)
+            # Evitar sobrescrever ficheiros existentes
+            base, ext = os.path.splitext(file_name)
+            counter = 1
+            while os.path.exists(dest):
+                dest = os.path.join(dest_dir, f"{base}_{counter}{ext}")
+                counter += 1
+            with open(dest, "wb") as f:
+                f.write(raw)
+            page.show_dialog(
+                ft.AlertDialog(
+                    open=True,
+                    modal=False,
+                    title=ft.Text("Ficheiro guardado"),
+                    content=ft.Text(f"Guardado em:\n{dest}", size=12),
+                    actions=[ft.TextButton("OK", on_click=lambda e: page.pop_dialog())],
+                    actions_alignment=ft.MainAxisAlignment.END,
+                )
+            )
+
+        bubble = ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Text(
+                                "Tu" if is_me else username,
+                                weight=ft.FontWeight.BOLD,
+                                color=T("me_name_color") if is_me else T("other_name_color"),
+                                size=12,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.DOWNLOAD,
+                                icon_size=16,
+                                icon_color=ft.Colors.BLUE_300,
+                                tooltip="Guardar ficheiro",
+                                on_click=save_file,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                    content_widget,
+                    ft.Text(file_name, size=11, color=ft.Colors.GREY_400,
+                            italic=True, visible=is_image),
+                ],
+                spacing=4,
+            ),
+            bgcolor=T("bubble_me_bg") if is_me else T("bubble_other_bg"),
+            border_radius=10,
+            padding=10,
+            margin=ft.Margin(40 if is_me else 0, 0, 0 if is_me else 40, 4),
+        )
+        return bubble
+
+    # ── Upload manual via caminho ─────────────────────────────────────────────
+    def open_file_dialog(e):
+        path_field = ft.TextField(
+            label="Caminho do ficheiro",
+            hint_text=r"Ex: C:\imagens\foto.png",
+            expand=True,
+            autofocus=True,
+        )
+        error_text = ft.Text("", color=ft.Colors.RED_400, size=12)
+
+        def send_file(e):
+            path = path_field.value.strip() if path_field.value else ""
+            if not path:
+                error_text.value = "Introduz um caminho válido."
+                page.update()
+                return
+            if not os.path.isfile(path):
+                error_text.value = "Ficheiro não encontrado."
+                page.update()
+                return
+            try:
+                with open(path, "rb") as fh:
+                    raw = fh.read()
+            except Exception as ex:
+                error_text.value = f"Erro ao ler ficheiro: {ex}"
+                page.update()
+                return
+
+            file_name = os.path.basename(path)
+            b64 = base64.b64encode(raw).decode()
+            mime = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+            my_name = page.session.store.get("user_name")
+
+            page.pubsub.send_all(
+                Message(
+                    user=my_name,
+                    text="",
+                    message_type="file_message",
+                    room=current_room[0],
+                    to_user=private_with[0] if is_private[0] else "",
+                    file_name=file_name,
+                    file_data=b64,
+                    file_mime=mime,
+                )
+            )
+            page.pop_dialog()
+
+        def cancel(e):
+            page.pop_dialog()
+
+        page.show_dialog(
+            ft.AlertDialog(
+                open=True,
+                modal=True,
+                title=ft.Text("Enviar ficheiro / imagem"),
+                content=ft.Column(
+                    controls=[
+                        ft.Text("Cola o caminho completo do ficheiro:", size=13),
+                        path_field,
+                        error_text,
+                    ],
+                    tight=True,
+                    spacing=8,
+                ),
+                actions=[
+                    ft.TextButton("Cancelar", on_click=cancel),
+                    ft.TextButton("Enviar", on_click=send_file),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+        )
+
     def apply_theme():
         """Atualiza todas as cores da UI para o tema atual."""
         page.bgcolor = T("page_bg")
@@ -618,6 +784,31 @@ def main(page: ft.Page):
             page.update()
             return
 
+        if message.message_type == "file_message":
+            is_me = message.user == my_name
+            # Filtrar por sala/privado igual às mensagens normais
+            if message.to_user:  # privado
+                other = message.user if is_me else message.to_user
+                if not (is_private[0] and private_with[0] == other):
+                    if not is_me:
+                        unread_private[message.user] = unread_private.get(message.user, 0) + 1
+                        update_private_badge(message.user, unread_private[message.user])
+                        page.update()
+                    return
+            else:  # sala
+                if is_private[0] or message.room != current_room[0]:
+                    if not is_me and message.room != current_room[0]:
+                        unread_rooms[message.room] = unread_rooms.get(message.room, 0) + 1
+                        update_room_badge(message.room, unread_rooms[message.room])
+                        page.update()
+                    return
+            chat.controls.append(
+                build_file_bubble(message.user, is_me, message.file_name,
+                                  message.file_data, message.file_mime)
+            )
+            page.update()
+            return
+
         if message.message_type == "private_message":
             # Só interessa se eu for o destinatário ou o remetente
             is_for_me = message.to_user == my_name
@@ -820,6 +1011,12 @@ def main(page: ft.Page):
                             tooltip="Emojis",
                             on_click=toggle_emoji_panel,
                         ),
+                        ft.IconButton(
+                            icon=ft.Icons.ATTACH_FILE,
+                            icon_color=T("send_icon_color"),
+                            tooltip="Enviar ficheiro/imagem",
+                            on_click=open_file_dialog,
+                        ),
                         new_message,
                         ft.IconButton(
                             icon=ft.Icons.SEND,
@@ -883,5 +1080,5 @@ def main(page: ft.Page):
         )
     )
 
-ft.app(target=main, view=ft.AppView.WEB_BROWSER, port=8550)
-#ft.run(main)
+
+ft.run(main)
